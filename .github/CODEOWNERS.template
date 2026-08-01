@@ -1,0 +1,8 @@
+# Ganti placeholder dengan GitHub handle atau group resmi.
+* @repository-owner
+/src/opticargo_knowledge_graph/schema/ @graph-schema-owner
+/src/opticargo_knowledge_graph/projections/ @graph-projection-owner
+/src/opticargo_knowledge_graph/queries/ @graph-query-owner
+/src/opticargo_knowledge_graph/worker.py @runtime-owner
+/src/opticargo_knowledge_graph/reconciliation.py @runtime-owner
+/docs/ @documentation-owner
