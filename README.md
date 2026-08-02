@@ -1,109 +1,57 @@
 # OptiCargo Knowledge Graph
 
-Repository ini menyediakan **struktur awal implementasi** untuk Knowledge Graph OptiCargo. Seluruh file source, test, script, build configuration, Cypher migration, dan workflow masih kosong. Penjelasan fungsi, contract, dependency, alur runtime, dan pengujian disimpan pada README di setiap folder serta dokumen pada `docs/`.
+`opticargo-knowledge-graph` menyediakan projection graph read model pada Neo4j untuk konteks kapal, voyage, pelabuhan, rute, supplier, dan komoditas. PostgreSQL dan data seed tetap menjadi source of truth; graph dapat dibangun ulang dari projection tersebut.
 
-## Peran repository
+## Kemampuan
 
-Knowledge Graph menghasilkan tiga artifact utama:
+- Query `GraphContext` bertipe untuk voyage, kapasitas kapal, rute aktif, dan kandidat backhaul.
+- Query read-only untuk backhaul discovery, cargo matching, pathfinding, dan spatial lookup.
+- Client Neo4j bersama untuk `opticargo-agents` dan `opticargo-rag-pipeline`.
+- Schema constraint/index Cypher, lifecycle worker, dan reconciliation helper.
 
-1. **Python typed query package** untuk discovery, cargo matching, bounded pathfinding, spatial query, dan analytics yang digunakan oleh `opticargo-agents` serta graph context pada `opticargo-rag-pipeline`.
-2. **Graph synchronization worker** yang membaca domain event dari Redis Streams, mengambil data canonical dari PostgreSQL, lalu membuat projection idempotent ke Neo4j.
-3. **Scheduled reconciliation job** yang membandingkan PostgreSQL dengan Neo4j dan memperbaiki node/relationship yang missing, mismatched, atau stale sesuai policy.
+## Model graph
 
-Repository ini bukan public HTTP service. PostgreSQL tetap menjadi source of truth. Neo4j adalah derived read model yang harus dapat dibangun ulang melalui event replay atau reconciliation.
-
-## Alur utama
-
-```text
-Gateway transaction + transactional outbox
-                  │
-                  ▼
-        Redis Stream opticargo:events
-                  │
-                  ▼
-          graph synchronization worker
-                  │
-       validate event contract/version
-                  │
-       read canonical row from PostgreSQL
-                  │
-       build deterministic projection plan
-                  │
-                  ▼
-              Neo4j projection
-
-scheduled/manual reconciliation
-        PostgreSQL canonical rows
-                  │
-      compare stable projection state
-                  │
-     repair missing/mismatched projection
-                  │
-      optional stale projection cleanup
-                  ▼
-                 Neo4j
-
-Agents/RAG → typed query package → Neo4j read queries → typed results
+```mermaid
+flowchart LR
+    Ship -->|BEROPERASI_DI| Voyage
+    Voyage -->|SINGGAH_DI| Port
+    Port -->|TERHUBUNG_DENGAN| Port
+    Supplier -->|BERLOKASI_DI| Port
+    Supplier -->|MENYUPLAI| Commodity
 ```
 
-## Canonical graph scope
+Untuk sebuah voyage, `find_backhaul_graph_context` memprioritaskan supplier pada pelabuhan tujuan sebagai kandidat muatan balik. Semua query aplikasi harus parameterized dan read-only.
 
-Node projection yang terlihat pada rancangan dan implementasi referensi:
+## Integrasi
 
-```text
-User, Port, Ship, Route, Voyage, CargoCapacity, Commodity, Supplier,
-CargoListing, Recommendation, Booking, Payment, Document, Review
-```
-
-Entity high-volume atau sensitif seperti `RagChunk`, `Notification`, dan `AuditLog` tidak menjadi node graph. `RagChunk` tetap berada pada Qdrant, sedangkan Notification/AuditLog tetap menjadi data PostgreSQL.
-
-## Struktur repository
-
-| Path | Kegunaan |
+| Repository | Peran |
 |---|---|
-| `src/opticargo_knowledge_graph/` | Package query, projection, schema migration, worker, reconciliation, client dependency, CLI, health, logging, dan metrics. |
-| `tests/` | Architecture, contract, unit, smoke, integration, E2E, resilience, evaluation, performance, dan security tests. |
-| `docs/` | Graph schema, projection model, event processing, reconciliation, query contract, implementation flow, operations, testing, Infra, Shared wheel, ADR, dan Definition of Done. |
-| `config/` | Acuan environment Infra serta daftar konfigurasi khusus Knowledge Graph. |
-| `scripts/` | Placeholder bootstrap, validation, smoke, migration, worker, reconciliation, dan graph inspection. |
-| `.github/` | Template issue/PR, CODEOWNERS template, dan workflow yang masih dinonaktifkan. |
-| `vendor/` | Lokasi opsional wheel `opticargo-shared` untuk mode offline. |
+| `opticargo-data` | Data seed pelabuhan, kapal, rute, voyage, supplier, dan komoditas. |
+| `opticargo-shared` | Kontrak `GraphContext` dan model lintas layanan. |
+| `opticargo-agents` | Analisis rute dan kandidat backhaul. |
+| `opticargo-rag-pipeline` | Enrichment graph untuk retrieval regulasi. |
+| `opticargo-infra` | Runtime Neo4j dan graph worker. |
 
-## Status struktur awal
+## Menjalankan lokal
 
-- Semua file Python pada `src/` dan `tests/` belum berisi kode.
-- Semua script, Cypher migration, `pyproject.toml`, requirements, Dockerfile, Makefile, Compose overlay, dan workflow belum berisi konfigurasi aktif.
-- Tidak ada test runtime yang diklaim lulus.
-- Tidak ada wheel, image, atau generated artifact yang dibundel.
-- Port metrics graph worker belum diputuskan oleh Infra; jangan membuat host mapping sepihak.
+```powershell
+cd "D:\PROYEK ML DAN AI\OptiCargo\opticargo-infra"
+docker compose -f docker-compose.yml -f compose/overrides/local-build.yml --profile core --profile ai up -d neo4j graph-worker
+docker compose -f docker-compose.yml -f compose/overrides/local-build.yml --profile core --profile ai ps neo4j graph-worker
+```
 
-## Dokumen awal yang perlu dibaca
+Konfigurasi menggunakan `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, dan `WORKER_HEARTBEAT_SECONDS`. Nilai credential dikelola melalui environment infra, bukan source.
 
-1. [`docs/00_START_HERE.md`](docs/00_START_HERE.md)
-2. [`docs/EXISTING_IMPLEMENTATION_REVIEW.md`](docs/EXISTING_IMPLEMENTATION_REVIEW.md)
-3. [`docs/GRAPH_SCHEMA_SPECIFICATION.md`](docs/GRAPH_SCHEMA_SPECIFICATION.md)
-4. [`docs/PROJECTION_MODEL.md`](docs/PROJECTION_MODEL.md)
-5. [`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md)
-6. [`docs/IMPLEMENTATION_FLOW.md`](docs/IMPLEMENTATION_FLOW.md)
-7. [`docs/QUERY_LIBRARY.md`](docs/QUERY_LIBRARY.md)
-8. [`docs/TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md)
-9. [`docs/SMOKE_TEST_SPECIFICATION.md`](docs/SMOKE_TEST_SPECIFICATION.md)
-10. [`docs/DEFINITION_OF_DONE.md`](docs/DEFINITION_OF_DONE.md)
+## Operasi aman
 
-## Prinsip implementasi
+- Gunakan `graph_context.py` untuk integrasi agents/RAG karena menghasilkan model typed dari `opticargo-shared`.
+- Seeding dan mutasi projection dilakukan melalui workflow data yang disetujui; jangan menjalankan mutasi Cypher langsung di environment bersama.
+- Graph worker saat ini menangani lifecycle/heartbeat runtime. Proyeksi domain dan reconciliation harus tetap idempotent.
 
-- Gunakan model entity dan event dari `opticargo-shared`; jangan membuat contract lintas repository versi lokal.
-- Event hanya menjadi trigger. Projection final dibangun dari data canonical PostgreSQL, bukan mempercayai snapshot event sebagai otoritas.
-- Gunakan stable entity ID dari PostgreSQL dan deterministic projection hash.
-- Mutation Neo4j harus idempotent; duplicate event tidak boleh membuat node atau relationship ganda.
-- Query package bersifat read-only terhadap transaksi dan tidak boleh menjalankan mutation PostgreSQL.
-- Relationship lama yang dimiliki suatu entity harus dapat diganti secara aman saat foreign key berubah.
-- Data sensitif, secret, raw payment provider data, document object key, dan document content tidak boleh diproyeksikan.
-- Metrics, health, correlation ID, retry, pending reclaim, DLQ, reconciliation, dan recovery wajib dirancang sejak awal.
+## Dokumentasi
 
-## Referensi file
-
-- [`docs/SOURCE_FILE_CATALOG.md`](docs/SOURCE_FILE_CATALOG.md): tanggung jawab seluruh file source.
-- [`docs/TEST_FILE_CATALOG.md`](docs/TEST_FILE_CATALOG.md): tujuan seluruh file test.
-- [`FILE_MANIFEST.md`](FILE_MANIFEST.md): daftar file struktur awal.
-- [`REPOSITORY_INITIALIZATION_POLICY.md`](REPOSITORY_INITIALIZATION_POLICY.md): batas perubahan sebelum implementasi dimulai.
+- [Mulai dari sini](docs/00_START_HERE.md)
+- [Spesifikasi graph](docs/GRAPH_SCHEMA_SPECIFICATION.md)
+- [Model projection](docs/PROJECTION_MODEL.md)
+- [Library query](docs/QUERY_LIBRARY.md)
+- [Kontrak interface](docs/INTERFACE_CONTRACTS.md)
