@@ -72,6 +72,10 @@ def _voyage_snapshot(session: Session, voyage_id: str) -> dict | None:
         OPTIONAL MATCH (origin)-[route:TERHUBUNG_DENGAN {id: v.route_id}]->(destination)
         RETURN v.id AS voyage_id,
                v.route_id AS route_id,
+               v.departure_date AS departure_date,
+               v.arrival_date AS arrival_date,
+               v.total_capacity_ton AS total_weight_ton,
+               v.used_capacity_ton AS used_weight_ton,
                v.remaining_capacity_ton AS remaining_weight_ton,
                ship.id AS ship_id,
                ship.name AS ship_name,
@@ -257,6 +261,8 @@ def find_backhaul_graph_context(
                 route_type=snapshot.get("route_type"),
                 origin_port=origin,
                 destination_port=destination,
+                departure_date=snapshot.get("departure_date"),
+                arrival_date=snapshot.get("arrival_date"),
                 distance_nm=_optional_decimal(snapshot.get("route_distance_nm")),
                 estimated_days=snapshot.get("route_estimated_days"),
             )
@@ -266,6 +272,8 @@ def find_backhaul_graph_context(
             ship_capacity = ShipCapacityContext(
                 ship_id=_uuid(snapshot["ship_id"]),
                 ship_name=snapshot["ship_name"],
+                total_weight_ton=_optional_decimal(snapshot.get("total_weight_ton")),
+                used_weight_ton=_optional_decimal(snapshot.get("used_weight_ton")),
                 remaining_weight_ton=str(capacity),
                 remaining_volume_m3=_optional_decimal(snapshot.get("ship_cargo_capacity_m3")),
                 deadweight_tonnage=_optional_decimal(snapshot.get("ship_deadweight_tonnage")),

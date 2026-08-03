@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
+from opticargo_knowledge_graph.clients.neo4j import create_neo4j_driver
+from opticargo_knowledge_graph.config import GraphSettings
 from opticargo_knowledge_graph.queries.graph_context import find_backhaul_graph_context
+
+
+@contextmanager
+def get_session(settings: GraphSettings | None = None):
+    """Create a short-lived Neo4j session from environment settings.
+
+    This function is intentionally tiny and read-focused so RAG/Agents can use
+    the KG package without owning Neo4j driver setup details.
+    """
+    driver = create_neo4j_driver(settings)
+    try:
+        with driver.session() as session:
+            yield session
+    finally:
+        driver.close()
 
 
 @dataclass(frozen=True)
@@ -33,4 +51,4 @@ class KnowledgeGraphClient:
             )
 
 
-__all__ = ["KnowledgeGraphClient"]
+__all__ = ["KnowledgeGraphClient", "get_session"]
