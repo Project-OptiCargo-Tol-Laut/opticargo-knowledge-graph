@@ -1,3 +1,5 @@
-from .graph_context import find_backhaul_graph_context
+"""Knowledge Graph read-query package.
 
-__all__ = ["find_backhaul_graph_context"]
+Submodules are imported explicitly to avoid loading optional shared/pydantic
+contracts for lightweight diagnostics.
+"""
