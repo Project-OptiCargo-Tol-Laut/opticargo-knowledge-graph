@@ -22,6 +22,8 @@ flowchart LR
 
 Untuk sebuah voyage, `find_backhaul_graph_context` memprioritaskan supplier pada pelabuhan tujuan sebagai kandidat muatan balik. Semua query aplikasi harus parameterized dan read-only.
 
+Output `GraphContext` mengikuti kontrak final `opticargo-shared`: port membawa metadata lokasi, active leg membawa `route_id`, `route_type`, `distance_nm`, dan `estimated_days`, kapasitas kapal membawa kapasitas berat/volume yang tersedia, serta supplier candidate membawa status `verified`, `avg_monthly_volume_ton`, dan daftar komoditas yang disuplai.
+
 ## Integrasi
 
 | Repository | Peran |

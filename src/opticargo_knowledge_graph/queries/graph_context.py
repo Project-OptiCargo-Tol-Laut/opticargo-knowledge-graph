@@ -2,9 +2,8 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
-
-from neo4j import Session
 
 from opticargo_shared.agent_state import (
     GraphBackhaulCandidate,
@@ -14,6 +13,11 @@ from opticargo_shared.agent_state import (
     SupplierContext,
     VoyageLegContext,
 )
+
+if TYPE_CHECKING:
+    from neo4j import Session
+else:
+    Session = Any
 
 
 def _uuid(value: str) -> UUID:
@@ -33,6 +37,12 @@ def _normalized_rating(value: float | int | str | None) -> Decimal | None:
     return min(max(rating, Decimal("0")), Decimal("1"))
 
 
+def _optional_decimal(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
 def _port_from_record(record: dict, prefix: str) -> PortContext | None:
     identifier = record.get(f"{prefix}_port_id")
     name = record.get(f"{prefix}_port_name")
@@ -42,7 +52,12 @@ def _port_from_record(record: dict, prefix: str) -> PortContext | None:
         port_id=_uuid(identifier),
         code=record.get(f"{prefix}_port_code") or name,
         name=name,
-        country=record.get(f"{prefix}_port_province"),
+        country=record.get(f"{prefix}_port_country") or "Indonesia",
+        city=record.get(f"{prefix}_port_city"),
+        province=record.get(f"{prefix}_port_province"),
+        latitude=_optional_decimal(record.get(f"{prefix}_port_latitude")),
+        longitude=_optional_decimal(record.get(f"{prefix}_port_longitude")),
+        max_vessel_tonnage=_optional_decimal(record.get(f"{prefix}_port_max_vessel_tonnage")),
     )
 
 
@@ -54,16 +69,31 @@ def _voyage_snapshot(session: Session, voyage_id: str) -> dict | None:
         OPTIONAL MATCH (ship:Ship)-[:BEROPERASI_DI]->(v)
         OPTIONAL MATCH (v)-[:SINGGAH_DI {role: 'origin'}]->(origin:Port)
         OPTIONAL MATCH (v)-[:SINGGAH_DI {role: 'destination'}]->(destination:Port)
+        OPTIONAL MATCH (origin)-[route:TERHUBUNG_DENGAN {id: v.route_id}]->(destination)
         RETURN v.id AS voyage_id,
+               v.route_id AS route_id,
                v.remaining_capacity_ton AS remaining_weight_ton,
                ship.id AS ship_id,
                ship.name AS ship_name,
+               ship.deadweight_tonnage AS ship_deadweight_tonnage,
+               ship.cargo_capacity_m3 AS ship_cargo_capacity_m3,
                origin.id AS origin_port_id,
                origin.name AS origin_port_name,
+               origin.city AS origin_port_city,
                origin.province AS origin_port_province,
+               origin.latitude AS origin_port_latitude,
+               origin.longitude AS origin_port_longitude,
+               origin.max_vessel_tonnage AS origin_port_max_vessel_tonnage,
                destination.id AS destination_port_id,
                destination.name AS destination_port_name,
-               destination.province AS destination_port_province
+               destination.city AS destination_port_city,
+               destination.province AS destination_port_province,
+               destination.latitude AS destination_port_latitude,
+               destination.longitude AS destination_port_longitude,
+               destination.max_vessel_tonnage AS destination_port_max_vessel_tonnage,
+               route.distance_nm AS route_distance_nm,
+               route.estimated_days AS route_estimated_days,
+               route.route_type AS route_type
         """,
         voyage_id=voyage_id,
     )
@@ -87,16 +117,24 @@ def _supplier_candidates(
           AND ($commodity IS NULL OR toLower(c.name) CONTAINS toLower($commodity))
           AND ($remaining_capacity IS NULL
                OR coalesce(s.avg_monthly_volume_ton, 0) <= $remaining_capacity)
+        OPTIONAL MATCH (s)-[:MENYUPLAI]->(all_commodity:Commodity)
+        WITH s, p, c, collect(DISTINCT all_commodity.id) AS supplied_commodity_ids
         RETURN s.id AS supplier_id,
                s.business_name AS supplier_name,
                s.rating AS supplier_rating,
                s.verified AS supplier_verified,
+               s.avg_monthly_volume_ton AS supplier_avg_monthly_volume_ton,
+               supplied_commodity_ids AS supplied_commodity_ids,
                c.id AS commodity_id,
                c.name AS commodity_name,
                s.avg_monthly_volume_ton AS available_weight_ton,
                p.id AS origin_port_id,
                p.name AS origin_port_name,
-               p.province AS origin_port_province
+               p.city AS origin_port_city,
+               p.province AS origin_port_province,
+               p.latitude AS origin_port_latitude,
+               p.longitude AS origin_port_longitude,
+               p.max_vessel_tonnage AS origin_port_max_vessel_tonnage
         ORDER BY coalesce(s.verified, false) DESC,
                  coalesce(s.rating, 0) DESC,
                  coalesce(s.avg_monthly_volume_ton, 0) DESC
@@ -163,6 +201,7 @@ def find_backhaul_graph_context(
     )
 
     candidates: list[GraphBackhaulCandidate] = []
+    voyage_origin = _port_from_record(snapshot, "origin") if snapshot else None
     for raw_record in candidate_result:
         record = dict(raw_record)
         try:
@@ -173,7 +212,14 @@ def find_backhaul_graph_context(
                 supplier_id=_uuid(record["supplier_id"]),
                 supplier_name=record["supplier_name"],
                 rating=_normalized_rating(record.get("supplier_rating")),
+                verified=record.get("supplier_verified"),
+                avg_monthly_volume_ton=_optional_decimal(
+                    record.get("supplier_avg_monthly_volume_ton")
+                ),
                 nearest_port_id=supplier_port.port_id,
+                supplied_commodity_ids=[
+                    _uuid(value) for value in record.get("supplied_commodity_ids", []) if value
+                ],
             )
             candidates.append(
                 GraphBackhaulCandidate(
@@ -182,10 +228,12 @@ def find_backhaul_graph_context(
                         str(record["commodity_id"]),
                         str(supplier_port.port_id),
                     ),
+                    voyage_id=_uuid(str(voyage_id)) if voyage_id else None,
                     supplier=supplier,
                     commodity_id=_uuid(record["commodity_id"]),
                     commodity_name=record["commodity_name"],
                     origin_port=supplier_port,
+                    destination_port=voyage_origin,
                     available_weight_ton=str(record.get("available_weight_ton") or 0),
                     schedule_compatible=True,
                     capacity_compatible=capacity is None
@@ -204,7 +252,14 @@ def find_backhaul_graph_context(
         origin = _port_from_record(snapshot, "origin")
         destination = _port_from_record(snapshot, "destination")
         if origin and destination:
-            active_leg = VoyageLegContext(origin_port=origin, destination_port=destination)
+            active_leg = VoyageLegContext(
+                route_id=_uuid(snapshot["route_id"]) if snapshot.get("route_id") else None,
+                route_type=snapshot.get("route_type"),
+                origin_port=origin,
+                destination_port=destination,
+                distance_nm=_optional_decimal(snapshot.get("route_distance_nm")),
+                estimated_days=snapshot.get("route_estimated_days"),
+            )
         elif not origin or not destination:
             warnings.append("Voyage operating leg is incomplete in the knowledge graph")
         if snapshot.get("ship_id") and snapshot.get("ship_name") and capacity is not None:
@@ -212,6 +267,9 @@ def find_backhaul_graph_context(
                 ship_id=_uuid(snapshot["ship_id"]),
                 ship_name=snapshot["ship_name"],
                 remaining_weight_ton=str(capacity),
+                remaining_volume_m3=_optional_decimal(snapshot.get("ship_cargo_capacity_m3")),
+                deadweight_tonnage=_optional_decimal(snapshot.get("ship_deadweight_tonnage")),
+                cargo_capacity_m3=_optional_decimal(snapshot.get("ship_cargo_capacity_m3")),
             )
 
     return GraphContext(
