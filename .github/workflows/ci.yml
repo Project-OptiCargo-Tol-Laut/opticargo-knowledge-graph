@@ -21,6 +21,16 @@ jobs:
           repository: Project-OptiCargo-Tol-Laut/opticargo-shared
           ref: develop
           path: opticargo-shared
+      - uses: actions/checkout@v4
+        with:
+          repository: Project-OptiCargo-Tol-Laut/opticargo-data
+          ref: develop
+          path: opticargo-data
+      - uses: actions/checkout@v4
+        with:
+          repository: Project-OptiCargo-Tol-Laut/opticargo-infra
+          ref: develop
+          path: opticargo-infra
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

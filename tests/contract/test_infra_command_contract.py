@@ -7,7 +7,7 @@ def test_infra_graph_commands_and_healthcheck_match_package_entrypoints() -> Non
     compose = (WORKSPACE_ROOT / "opticargo-infra" / "docker-compose.yml").read_text(
         encoding="utf-8"
     )
-    env = (WORKSPACE_ROOT / "opticargo-infra" / ".env").read_text(encoding="utf-8")
+    env = (WORKSPACE_ROOT / "opticargo-infra" / ".env.example").read_text(encoding="utf-8")
     assert "opticargo_knowledge_graph.healthcheck" in compose
     assert "GRAPH_HEARTBEAT_PATH" in compose
     assert "WORKER_METRICS_PORT" in compose
