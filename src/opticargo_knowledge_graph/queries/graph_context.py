@@ -119,8 +119,8 @@ def _supplier_candidates(
         MATCH (s)-[:MENYUPLAI]->(c:Commodity)
         WHERE ($port_id IS NULL OR p.id = $port_id)
           AND ($commodity IS NULL OR toLower(c.name) CONTAINS toLower($commodity))
-          AND ($remaining_capacity IS NULL
-               OR coalesce(s.avg_monthly_volume_ton, 0) <= $remaining_capacity)
+          AND coalesce(s.avg_monthly_volume_ton, 0) > 0
+          AND ($remaining_capacity IS NULL OR $remaining_capacity > 0)
         OPTIONAL MATCH (s)-[:MENYUPLAI]->(all_commodity:Commodity)
         WITH s, p, c, collect(DISTINCT all_commodity.id) AS supplied_commodity_ids
         RETURN s.id AS supplier_id,
@@ -131,7 +131,11 @@ def _supplier_candidates(
                supplied_commodity_ids AS supplied_commodity_ids,
                c.id AS commodity_id,
                c.name AS commodity_name,
-               s.avg_monthly_volume_ton AS available_weight_ton,
+               CASE
+                 WHEN $remaining_capacity IS NULL THEN s.avg_monthly_volume_ton
+                 WHEN s.avg_monthly_volume_ton > $remaining_capacity THEN $remaining_capacity
+                 ELSE s.avg_monthly_volume_ton
+               END AS available_weight_ton,
                p.id AS origin_port_id,
                p.name AS origin_port_name,
                p.city AS origin_port_city,
@@ -170,6 +174,7 @@ def find_backhaul_graph_context(
     warnings: list[str] = []
     snapshot: dict | None = None
     selected_port_id: str | None = None
+    anchor_requested = bool(voyage_id or (origin_port and origin_port.strip()))
 
     if voyage_id:
         snapshot = _voyage_snapshot(session, str(voyage_id))
@@ -179,6 +184,8 @@ def find_backhaul_graph_context(
             # A backhaul starts at the current voyage destination.  If older
             # seeded data has no destination role, fall back to its origin.
             selected_port_id = snapshot.get("destination_port_id") or snapshot.get("origin_port_id")
+            if selected_port_id is None:
+                warnings.append("Voyage has no usable supplier-port anchor in the knowledge graph")
     elif origin_port and origin_port.strip():
         port_record = session.run(
             """
@@ -196,12 +203,19 @@ def find_backhaul_graph_context(
             warnings.append(f"Port '{origin_port}' was not found in the knowledge graph")
 
     capacity = snapshot.get("remaining_weight_ton") if snapshot else None
-    candidate_result = _supplier_candidates(
-        session,
-        port_id=selected_port_id,
-        commodity=commodity,
-        remaining_capacity=capacity,
-        limit=normalized_limit,
+    # Never widen a failed voyage/port lookup into a global supplier search.
+    # A global search is still supported when the caller intentionally omits
+    # both anchors (for example, an analytics overview).
+    candidate_result = (
+        []
+        if anchor_requested and selected_port_id is None
+        else _supplier_candidates(
+            session,
+            port_id=selected_port_id,
+            commodity=commodity,
+            remaining_capacity=capacity,
+            limit=normalized_limit,
+        )
     )
 
     candidates: list[GraphBackhaulCandidate] = []
@@ -225,6 +239,7 @@ def find_backhaul_graph_context(
                     _uuid(value) for value in record.get("supplied_commodity_ids", []) if value
                 ],
             )
+            offered_weight = Decimal(str(record.get("available_weight_ton") or 0))
             candidates.append(
                 GraphBackhaulCandidate(
                     cargo_listing_id=_candidate_uuid(
@@ -238,13 +253,19 @@ def find_backhaul_graph_context(
                     commodity_name=record["commodity_name"],
                     origin_port=supplier_port,
                     destination_port=voyage_origin,
-                    available_weight_ton=str(record.get("available_weight_ton") or 0),
+                    available_weight_ton=str(offered_weight),
                     schedule_compatible=True,
-                    capacity_compatible=capacity is None
-                    or Decimal(str(record.get("available_weight_ton") or 0)) <= Decimal(str(capacity)),
+                    capacity_compatible=offered_weight > 0
+                    and (capacity is None or offered_weight <= Decimal(str(capacity))),
                     certification_compatible=bool(record.get("supplier_verified")),
                     graph_score=_normalized_rating(record.get("supplier_rating")),
-                    relationship_path=["Supplier", "BERLOKASI_DI", "Port", "MENYUPLAI", "Commodity"],
+                    relationship_path=[
+                        "Supplier",
+                        "BERLOKASI_DI",
+                        "Port",
+                        "MENYUPLAI",
+                        "Commodity",
+                    ],
                 )
             )
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:

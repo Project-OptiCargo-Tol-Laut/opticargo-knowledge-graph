@@ -1,0 +1,40 @@
+name: Knowledge Graph CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: opticargo-knowledge-graph
+      - uses: actions/checkout@v4
+        with:
+          repository: Project-OptiCargo-Tol-Laut/opticargo-shared
+          ref: develop
+          path: opticargo-shared
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ./opticargo-shared
+          python -m pip install -e './opticargo-knowledge-graph[dev]'
+          python -m pip install ruff
+      - name: Validate
+        working-directory: opticargo-knowledge-graph
+        run: |
+          ruff check src tests
+          python -m compileall -q src tests
+          pytest -q
+          python -c "from opticargo_knowledge_graph.schema import load_migrations; assert load_migrations()"

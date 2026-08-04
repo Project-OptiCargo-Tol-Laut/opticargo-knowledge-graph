@@ -7,7 +7,9 @@
 - Query `GraphContext` bertipe untuk voyage, kapasitas kapal, rute aktif, dan kandidat backhaul.
 - Query read-only untuk backhaul discovery, cargo matching, pathfinding, dan spatial lookup.
 - Client Neo4j bersama untuk `opticargo-agents` dan `opticargo-rag-pipeline`.
-- Schema constraint/index Cypher, lifecycle worker, dan reconciliation helper.
+- Schema migration versioned dengan ledger, checksum, dan database lock.
+- Worker Redis Streams dengan event deduplication, bounded retry, pending reclaim, dan DLQ.
+- Reconciliation PostgreSQL-Neo4j berbasis checksum dengan mode check/repair/cleanup.
 
 ## Model graph
 
@@ -42,13 +44,35 @@ docker compose -f docker-compose.yml -f compose/overrides/local-build.yml --prof
 docker compose -f docker-compose.yml -f compose/overrides/local-build.yml --profile core --profile ai ps neo4j graph-worker
 ```
 
-Konfigurasi menggunakan `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, dan `WORKER_HEARTBEAT_SECONDS`. Nilai credential dikelola melalui environment infra, bukan source.
+Konfigurasi menggunakan `DATABASE_URL`, `REDIS_URL`, `NEO4J_URI`,
+`NEO4J_USER`, `NEO4J_PASSWORD`, dan konfigurasi `GRAPH_WORKER_*`. Nilai
+credential dikelola melalui environment infra, bukan source.
+
+Migrasi dan reconciliation dapat dijalankan terpisah:
+
+```powershell
+python -m opticargo_knowledge_graph.cli.migrate
+python -m opticargo_knowledge_graph.reconcile
+python -m opticargo_knowledge_graph.reconcile --repair
+python -m opticargo_knowledge_graph.reconcile --repair --cleanup-stale
+```
+
+Smoke sinkronisasi event idempotent dijalankan dari network runtime:
+
+```powershell
+python scripts/smoke_realtime_projection.py port <PORT_UUID> --copies 2
+```
 
 ## Operasi aman
 
 - Gunakan `graph_context.py` untuk integrasi agents/RAG karena menghasilkan model typed dari `opticargo-shared`.
 - Seeding dan mutasi projection dilakukan melalui workflow data yang disetujui; jangan menjalankan mutasi Cypher langsung di environment bersama.
-- Graph worker saat ini menangani lifecycle/heartbeat runtime. Proyeksi domain dan reconciliation harus tetap idempotent.
+- Graph worker membaca ulang entity dari PostgreSQL; payload event tidak dipercaya
+  sebagai source of truth.
+- Query aplikasi hanya melalui package `queries`, menggunakan parameter binding,
+  bounded limit/hop, deterministic ordering, dan timeout.
+- Relasi canonical adalah `Ship -BEROPERASI_DI-> Voyage -SINGGAH_DI-> Port`;
+  relasi legacy `MELAYANI` dihapus melalui migration 005.
 
 ## Dokumentasi
 

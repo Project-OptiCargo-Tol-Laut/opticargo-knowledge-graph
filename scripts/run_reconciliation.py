@@ -1,10 +1,6 @@
-from opticargo_knowledge_graph.reconciliation import reconcile_once
+"""Run the PostgreSQL-to-Neo4j reconciliation command."""
 
-
-def main() -> int:
-    print(reconcile_once())
-    return 0
-
+from opticargo_knowledge_graph.reconcile import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

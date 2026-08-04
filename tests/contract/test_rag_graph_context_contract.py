@@ -24,6 +24,66 @@ class _FakeSession:
         return self._responses.pop(0)
 
 
+def test_missing_voyage_does_not_fall_back_to_global_supplier_search() -> None:
+    session = _FakeSession(None, [])
+
+    context = find_backhaul_graph_context(
+        session=session,
+        correlation_id=uuid4(),
+        voyage_id=uuid4(),
+    )
+
+    assert context.candidates == []
+    assert any("was not found" in warning for warning in context.warnings)
+    assert len(session.queries) == 1
+
+
+def test_supplier_query_caps_partial_load_at_remaining_voyage_capacity() -> None:
+    correlation_id = uuid4()
+    voyage_id = uuid4()
+    origin_port_id = uuid4()
+    destination_port_id = uuid4()
+    supplier_id = uuid4()
+    commodity_id = uuid4()
+    snapshot = {
+        "voyage_id": str(voyage_id),
+        "remaining_weight_ton": 25.0,
+        "origin_port_id": str(origin_port_id),
+        "origin_port_name": "Makassar",
+        "destination_port_id": str(destination_port_id),
+        "destination_port_name": "Sorong",
+    }
+    candidates = [
+        {
+            "supplier_id": str(supplier_id),
+            "supplier_name": "PT Muatan Parsial",
+            "supplier_rating": 4.0,
+            "supplier_verified": True,
+            "supplier_avg_monthly_volume_ton": 80.0,
+            "supplied_commodity_ids": [str(commodity_id)],
+            "commodity_id": str(commodity_id),
+            "commodity_name": "Kopra",
+            # This is the value projected by the Cypher CASE expression.
+            "available_weight_ton": 25.0,
+            "origin_port_id": str(destination_port_id),
+            "origin_port_name": "Sorong",
+        }
+    ]
+    session = _FakeSession(snapshot, candidates)
+
+    context = find_backhaul_graph_context(
+        session=session,
+        correlation_id=correlation_id,
+        voyage_id=voyage_id,
+        commodity="kopra",
+    )
+
+    assert context.candidates[0].available_weight_ton == 25
+    assert context.candidates[0].capacity_compatible is True
+    supplier_query = session.queries[1][0]
+    assert "s.avg_monthly_volume_ton > $remaining_capacity" in supplier_query
+
+
 def test_backhaul_graph_context_contains_final_integration_fields() -> None:
     correlation_id = uuid4()
     voyage_id = uuid4()

@@ -7,6 +7,7 @@ def test_get_session_export_exists() -> None:
 
 def test_knowledge_graph_client_uses_driver_session() -> None:
     calls: list[str] = []
+    databases: list[str] = []
 
     class Result:
         def single(self):
@@ -27,10 +28,12 @@ def test_knowledge_graph_client_uses_driver_session() -> None:
             return Result()
 
     class Driver:
-        def session(self):
+        def session(self, *, database):
+            databases.append(database)
             return Session()
 
     context = KnowledgeGraphClient(Driver()).graph_context(origin_port="Ambon")
 
     assert calls
+    assert databases == ["neo4j"]
     assert context.candidates == []

@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import json
 
-from opticargo_knowledge_graph.config import GraphSettings
+from opticargo_knowledge_graph.cli.factory import build_driver_from_env
 from opticargo_knowledge_graph.health import liveness_report, readiness_report
 
 
 def main() -> int:
-    settings = GraphSettings.from_environment()
+    driver = build_driver_from_env()
+    try:
+        readiness = readiness_report(driver)
+    finally:
+        driver.close()
     payload = {
         "service": "opticargo-knowledge-graph",
-        "neo4j_uri": settings.neo4j_uri,
         "liveness": liveness_report(),
-        "readiness": readiness_report().to_dict(),
+        "readiness": readiness.to_dict(),
     }
     print(json.dumps(payload, default=str))
-    return 0
+    return 0 if readiness.status == "ready" else 1
 
 
 if __name__ == "__main__":

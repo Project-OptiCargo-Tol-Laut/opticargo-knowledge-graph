@@ -30,7 +30,7 @@ class ProjectionError(KnowledgeGraphError):
 
 class QueryError(KnowledgeGraphError):
     code = "query_error"
-    retryable = False
+    retryable = True
 
 
 __all__ = ["GraphErrorDetail", "KnowledgeGraphError", "ProjectionError", "QueryError"]

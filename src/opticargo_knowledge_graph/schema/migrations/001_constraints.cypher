@@ -1,3 +1,10 @@
+// Remove legacy non-unique indexes created by the historical data seeder.
+DROP INDEX port_id_idx IF EXISTS;
+DROP INDEX supplier_id_idx IF EXISTS;
+DROP INDEX commodity_id_idx IF EXISTS;
+DROP INDEX voyage_id_idx IF EXISTS;
+DROP INDEX ship_id_idx IF EXISTS;
+
 CREATE CONSTRAINT opticargo_port_id IF NOT EXISTS
 FOR (p:Port) REQUIRE p.id IS UNIQUE;
 

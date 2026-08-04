@@ -1,37 +1,23 @@
-# Typed Query Library
+# Typed read-only query library
 
-## Public capabilities
+Public API package `opticargo_knowledge_graph.queries`:
 
-### Backhaul discovery
+- `find_backhaul_graph_context`: shared `GraphContext` untuk Agents/RAG;
+- `candidate_suppliers`: supplier/commodity/port discovery;
+- `voyage_cargo_matches`: matching di destination voyage dengan capacity cap;
+- `route_paths` dan `direct_routes`: path 1-6 hop;
+- `ports_by_name` dan `nearby_ports`: lookup nama/geospatial;
+- `port_supplier_counts`: supplier, commodity, voyage, dan capacity analytics.
 
-Input voyage atau origin port, radius, schedule tolerance, dan limit. Hasil hanya memuat listing aktif dalam lokasi/waktu yang valid serta capacity fit yang dapat dibuktikan.
+Hasil memakai `QueryResult[T]` dan typed row seperti `SupplierMatch`,
+`RouteResult`, `PortResult`, dan `PortSupplierMetric`. Seluruh query memiliki:
 
-### Cargo matching
+- value parameter binding;
+- limit/hop yang di-clamp;
+- timeout maksimal 30 detik;
+- deterministic ordering dengan stable ID tie-breaker;
+- mutation/procedure guard;
+- `QueryError` typed untuk dependency failure.
 
-Input origin, destination, commodity/category, volume/weight, time window, compatibility/certification, dan limit. Hard constraint harus berada dalam query atau filter deterministik yang diuji.
-
-### Pathfinding
-
-Input start/end port dan bounded max hops. Gunakan canonical `ROUTE_TO`; tidak ada traversal tak terbatas atau dynamic Cypher dari user text.
-
-### Spatial
-
-Input port/radius/limit. Coordinate missing/invalid menghasilkan typed behavior. Unit jarak eksplisit.
-
-### Analytics
-
-Graph overview, corridor load, transaction lifecycle, dan underserved supplier. Formula network analytics dan underserved perlu keputusan product/data sebelum implementasi final.
-
-## Contract result
-
-- Typed model dan versioned field.
-- Stable entity IDs.
-- Unit eksplisit.
-- Deterministic order/tie-breaker.
-- Empty result berbeda dari dependency failure.
-- Query timeout dan validation error memiliki typed error.
-- Consumer test terhadap Agents/RAG.
-
-## Safety
-
-Value menggunakan parameter. Label, relationship, property, index, sort key, dan hop bound berasal dari allowlist, bukan string arbitrary.
+Raw Cypher tidak menjadi public consumer API. Dynamic label/property/sort key
+dari input pengguna dilarang.
