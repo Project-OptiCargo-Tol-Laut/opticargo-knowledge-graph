@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from opticargo_shared.agent_state import (
+from opticargo_knowledge_graph.graph_models import (
     GraphBackhaulCandidate,
     GraphContext,
     PortContext,
@@ -163,7 +163,7 @@ def find_backhaul_graph_context(
     commodity: str | None = None,
     limit: int = 20,
 ) -> GraphContext:
-    """Build a shared ``GraphContext`` from the current Neo4j projection.
+    """Build a KG-owned ``GraphContext`` from the current Neo4j projection.
 
     For a voyage, suppliers at its destination are preferred because they are
     potential backhaul cargo.  For an explicit port lookup, only suppliers at

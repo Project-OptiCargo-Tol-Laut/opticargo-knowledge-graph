@@ -1,11 +1,11 @@
-"""Installed Shared distribution provides the agreed typed graph contracts."""
+"""Shared remains stable while KG exposes its domain-specific graph contracts."""
 
 from importlib.metadata import files, version
 
-from opticargo_shared.agent_state import GraphBackhaulCandidate, GraphContext
+from opticargo_knowledge_graph.graph_models import GraphBackhaulCandidate, GraphContext
 
 
-def test_shared_distribution_version_and_contract_imports() -> None:
+def test_shared_distribution_version_and_kg_contract_imports() -> None:
     assert version("opticargo-shared") == "1.0.0"
     assert GraphContext.__name__ == "GraphContext"
     assert GraphBackhaulCandidate.__name__ == "GraphBackhaulCandidate"
