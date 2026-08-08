@@ -1,35 +1,26 @@
-# Reconciliation
+# Reconciliation PostgreSQL-Neo4j
 
-## Tujuan
+Reconciliation membandingkan ID dan `_source_checksum` untuk Port, Ship,
+Commodity, Route, Supplier, dan active Voyage. Urutan dependency merupakan
+`port -> ship -> commodity -> route -> supplier -> voyage`.
 
-Membuktikan Neo4j dapat direkonstruksi dari PostgreSQL dan memperbaiki event loss/drift tanpa duplicate.
+Mode:
 
-## Mode
+- default: check-only, tidak memutasi graph;
+- `--repair`: upsert missing/mismatched;
+- `--repair --cleanup-stale`: juga menghapus projection yang tidak lagi ada di
+  PostgreSQL.
 
-- **Check-only:** menghitung missing, mismatched, dan stale tanpa mutation.
-- **Repair:** upsert missing/mismatched; optional stale cleanup sesuai policy.
-- **Full rebuild:** pada graph disposable/cutover terkontrol, terapkan schema dan project seluruh canonical row.
-
-## Lock
-
-Redis distributed lock memakai unique token, TTL, refresh, dan owner-safe release. Job kedua gagal cepat atau menunggu sesuai policy; tidak boleh overlap diam-diam.
-
-## Dependency order
+Job menggunakan `_OptiCargoReconciliationLock` di Neo4j sehingga dua job tidak
+berjalan bersamaan. Report JSON memuat source/graph count, missing, mismatched,
+stale, projected, deleted, failed, dan durasi.
 
 ```text
-User → Port → Ship → Route → Voyage → CargoCapacity → Commodity → Supplier
-→ CargoListing → Recommendation → Booking → Payment → Document → Review
+python -m opticargo_knowledge_graph.reconcile
+python -m opticargo_knowledge_graph.reconcile --repair
+python -m opticargo_knowledge_graph.reconcile --repair --cleanup-stale
 ```
 
-Urutan final harus berasal dari projection registry dan digunakan test/docs, bukan disalin terpisah tanpa verification.
-
-## Comparison
-
-Gunakan stable projection hash dan entity ID set. Report per entity family memuat scanned, missing, mismatch, stale, repaired, deleted, failed, duration.
-
-## Stale cleanup
-
-- Default dan production policy harus eksplisit.
-- Check report disimpan sebelum cleanup destructive.
-- Cleanup tidak boleh menghapus node label di luar namespace/schema yang dimiliki repository.
-- Backup/snapshot/rebuild evidence tersedia sebelum release gate.
+Exit code 0 berarti tidak ada kegagalan dan, untuk check-only, tidak ada drift.
+Exit code 2 berarti drift ditemukan atau repair gagal. Cleanup harus dijalankan
+setelah report check-only ditinjau dan backup/rebuild source tersedia.

@@ -1,0 +1,3 @@
+# Compatibility marker: the implemented workflow is ci.yml.
+# This file intentionally keeps the former path visible for repository history
+# and must not be enabled or copied as a second workflow.

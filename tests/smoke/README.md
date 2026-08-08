@@ -12,7 +12,7 @@ Dijalankan berurutan. Case dependency hanya berjalan ketika environment eksplisi
 
 | File | Skenario yang harus diverifikasi |
 |---|---|
-| `test_repository_structure.py` | Memastikan file/folder/README/manifest tersedia, placeholder tetap kosong, workflow tidak aktif, dan tidak ada wheel/secret. |
+| `test_repository_structure.py` | Memastikan file/folder/README/manifest tersedia, tidak ada Python kosong, workflow CI/integration aktif, dan tidak ada wheel/secret. |
 | `test_shared_wheel.py` | Memastikan wheel Shared tersedia, version/distribution benar, import contract berhasil, dan checksum dapat dicatat. |
 | `test_environment_contract.py` | Memastikan required env tersedia, URI scheme benar, host/internal port tidak tertukar, dan collision tidak terjadi. |
 | `test_dependency_connectivity.py` | TCP/driver ping PostgreSQL, Redis, dan Neo4j menggunakan timeout singkat. |

@@ -8,6 +8,8 @@ Struktur ini disusun setelah meninjau dua sumber yang diberikan:
 ## Cara materi dipakai
 
 - Nama module/file source mengikuti implementasi referensi agar fungsi yang sudah dirancang tidak hilang.
-- File source/test/Cypher tidak menyalin kode implementasi referensi; semuanya tetap kosong.
-- README menjelaskan behavior yang terlihat pada code referensi dan requirement PRD.
-- Keputusan yang tidak didukung kedua sumber dicatat sebagai open decision, bukan diisi dengan asumsi.
+- Source, test, dan migration diimplementasikan ulang terhadap contract shared,
+  PRD, serta source of truth PostgreSQL; referensi hanya menjadi basis review.
+- README menjelaskan behavior runtime, precondition, evidence, dan boundary.
+- Keputusan yang belum didukung contract/data tetap dicatat sebagai open decision,
+  bukan disamarkan sebagai capability yang sudah selesai.

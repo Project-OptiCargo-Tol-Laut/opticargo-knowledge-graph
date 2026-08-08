@@ -2,7 +2,8 @@
 
 ## Level 0 — Repository structure
 
-Manifest, README, empty placeholders, no active workflow, no wheel/secret/generated artifact.
+Manifest, README, tidak ada Python kosong, workflow CI/integration tersedia,
+dan tidak ada wheel/secret/generated artifact yang tidak semestinya.
 
 ## Level 1 — Package foundation
 

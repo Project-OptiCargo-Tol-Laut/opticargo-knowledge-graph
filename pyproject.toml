@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opticargo_knowledge_graph"
+dynamic = ["version"]
+description = "Query library and schema definitions for OptiCargo AI Neo4j Knowledge Graph"
+requires-python = ">=3.10"
+dependencies = [
+    "neo4j==5.21.0",
+    "pydantic>=2.0,<3.0",
+    "redis==5.3.1",
+    "psycopg2-binary==2.9.9",
+    "prometheus-client==0.26.0",
+    "opticargo-shared==1.0.0",
+]
+
+[project.scripts]
+opticargo-graph-migrate = "opticargo_knowledge_graph.cli.migrate:main"
+opticargo-graph-reconcile = "opticargo_knowledge_graph.reconcile:main"
+opticargo-graph-worker = "opticargo_knowledge_graph.worker:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+opticargo_knowledge_graph = ["py.typed", "schema/**/*.cypher", "**/*.md"]
+
+[tool.setuptools.dynamic]
+version = {attr = "opticargo_knowledge_graph.version.__version__"}
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "flake8>=6.0"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "BLE", "E", "F", "I", "RUF", "UP"]

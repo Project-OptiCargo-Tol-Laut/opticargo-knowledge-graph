@@ -1,9 +1,10 @@
-# Workflow Placeholders
+# Workflow Delivery Gates
 
-| File | Tujuan setelah diaktifkan | Gate minimum |
+| File | Status | Gate minimum |
 |---|---|---|
-| `ci.yml.disabled` | lint, format, type-check, unit, contract, architecture, migration resource, coverage, package build | command nyata tersedia dan tidak menggunakan permanent skip |
-| `integration.yml.disabled` | PostgreSQL, Redis Streams, Neo4j, worker, reconciliation, query integration | service dependency, seed, readiness, timeout, cleanup, dan artifact log tersedia |
-| `release.yml.disabled` | wheel/image build, SBOM/provenance, immutable tag, release evidence | seluruh release gate, smoke, migration, rollback/rebuild, dan security scan lulus |
+| `ci.yml` | Aktif untuk PR/push | lint, unit/contract/architecture, migration resource, dan clean package import |
+| `integration.yml` | Aktif untuk PR/manual | Neo4j service nyata, migration idempotent, query/projection integration |
+| `release.yml.disabled` | Sudah diimplementasikan, belum diaktifkan | wheel/image, SBOM, vulnerability scan, immutable artifact, provenance |
 
-Jangan mengubah ekstensi menjadi `.yml` sebelum workflow tersebut dapat dijalankan dari clean checkout.
+Release workflow tidak boleh diaktifkan sebelum protected environment, registry
+permission, tag policy, dan penanggung jawab release disetujui pemilik organisasi.
