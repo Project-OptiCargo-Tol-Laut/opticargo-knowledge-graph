@@ -119,22 +119,25 @@ def _supplier_candidates(
         MATCH (s)-[:MENYUPLAI]->(c:Commodity)
         WHERE ($port_id IS NULL OR p.id = $port_id)
           AND ($commodity IS NULL OR toLower(c.name) CONTAINS toLower($commodity))
-          AND coalesce(s.avg_monthly_volume_ton, 0) > 0
+          AND toFloat(coalesce(s.avg_monthly_volume_ton, 0)) > 0
           AND ($remaining_capacity IS NULL OR $remaining_capacity > 0)
         OPTIONAL MATCH (s)-[:MENYUPLAI]->(all_commodity:Commodity)
-        WITH s, p, c, collect(DISTINCT all_commodity.id) AS supplied_commodity_ids
+        WITH s, p, c,
+             toFloat(coalesce(s.avg_monthly_volume_ton, 0)) AS supplier_volume,
+             collect(DISTINCT all_commodity.id) AS supplied_commodity_ids
         RETURN s.id AS supplier_id,
                s.business_name AS supplier_name,
                s.rating AS supplier_rating,
                s.verified AS supplier_verified,
-               s.avg_monthly_volume_ton AS supplier_avg_monthly_volume_ton,
+               supplier_volume AS supplier_avg_monthly_volume_ton,
                supplied_commodity_ids AS supplied_commodity_ids,
                c.id AS commodity_id,
                c.name AS commodity_name,
                CASE
-                 WHEN $remaining_capacity IS NULL THEN s.avg_monthly_volume_ton
-                 WHEN s.avg_monthly_volume_ton > $remaining_capacity THEN $remaining_capacity
-                 ELSE s.avg_monthly_volume_ton
+                 WHEN $remaining_capacity IS NULL THEN supplier_volume
+                 WHEN supplier_volume > toFloat($remaining_capacity)
+                 THEN toFloat($remaining_capacity)
+                 ELSE supplier_volume
                END AS available_weight_ton,
                p.id AS origin_port_id,
                p.name AS origin_port_name,
@@ -145,7 +148,7 @@ def _supplier_candidates(
                p.max_vessel_tonnage AS origin_port_max_vessel_tonnage
         ORDER BY coalesce(s.verified, false) DESC,
                  coalesce(s.rating, 0) DESC,
-                 coalesce(s.avg_monthly_volume_ton, 0) DESC
+                 supplier_volume DESC
         LIMIT $limit
         """,
         port_id=port_id,

@@ -81,7 +81,7 @@ def test_supplier_query_caps_partial_load_at_remaining_voyage_capacity() -> None
     assert context.candidates[0].available_weight_ton == 25
     assert context.candidates[0].capacity_compatible is True
     supplier_query = session.queries[1][0]
-    assert "s.avg_monthly_volume_ton > $remaining_capacity" in supplier_query
+    assert "supplier_volume > toFloat($remaining_capacity)" in supplier_query
 
 
 def test_backhaul_graph_context_contains_final_integration_fields() -> None:
