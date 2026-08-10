@@ -1,31 +1,13 @@
-"""Knowledge Graph schema helpers."""
+"""Canonical Knowledge Graph schema and migration surface."""
 
-from opticargo_knowledge_graph.schema.migrator import (
-    Migration,
-    MigrationReport,
-    SchemaMigrator,
-    apply_migrations,
-    load_migrations,
-    migration_files,
-)
-from opticargo_knowledge_graph.schema.model import (
-    CANONICAL_LABELS,
-    CANONICAL_RELATIONSHIPS,
-    PROJECTION_METADATA_PROPERTIES,
-    SCHEMA_VERSION,
-    SENSITIVE_PROPERTIES,
+from .migrator import GraphMigrator, SchemaMigrator, Migration, MigrationError, load_migrations, migration_files, split_cypher_statements, apply_migrations
+from .model import (
+    CANONICAL_LABELS, CANONICAL_RELATIONSHIPS, PROJECTION_METADATA_PROPERTIES,
+    SCHEMA_VERSION, SENSITIVE_PROPERTIES,
 )
 
 __all__ = [
-    "CANONICAL_LABELS",
-    "CANONICAL_RELATIONSHIPS",
-    "PROJECTION_METADATA_PROPERTIES",
-    "SCHEMA_VERSION",
-    "SENSITIVE_PROPERTIES",
-    "Migration",
-    "MigrationReport",
-    "SchemaMigrator",
-    "apply_migrations",
-    "load_migrations",
-    "migration_files",
+    "CANONICAL_LABELS", "CANONICAL_RELATIONSHIPS", "PROJECTION_METADATA_PROPERTIES",
+    "SCHEMA_VERSION", "SENSITIVE_PROPERTIES", "GraphMigrator", "SchemaMigrator", "Migration", "MigrationError", "apply_migrations",
+    "load_migrations", "migration_files", "split_cypher_statements",
 ]
