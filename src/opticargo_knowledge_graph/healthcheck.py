@@ -1,32 +1,37 @@
-"""CLI healthcheck entrypoint for dependency or heartbeat readiness."""
-
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
-from opticargo_knowledge_graph.clients.neo4j import create_neo4j_driver
-from opticargo_knowledge_graph.config import GraphSettings
-from opticargo_knowledge_graph.health import heartbeat_report, readiness_report
+from .config import get_settings
+from .health import heartbeat_report, is_fresh, read_health
 
 
-def main() -> None:
-    heartbeat_path = os.getenv("GRAPH_HEARTBEAT_PATH")
-    if heartbeat_path:
+def main() -> int | None:
+    legacy_path = os.getenv("GRAPH_HEARTBEAT_PATH")
+    # GRAPH_HEARTBEAT_PATH is retained for backward compatibility. The merged
+    # final worker writes this compatibility heartbeat in addition to its
+    # canonical WORKER_HEALTH_FILE when the variable is configured.
+    if legacy_path:
         report = heartbeat_report(
-            Path(heartbeat_path),
+            Path(legacy_path),
             max_age_seconds=int(os.getenv("GRAPH_HEARTBEAT_MAX_AGE_SECONDS", "90")),
         )
-    else:
-        settings = GraphSettings.from_environment()
-        driver = create_neo4j_driver(settings)
-        try:
-            report = readiness_report(driver)
-        finally:
-            driver.close()
-    if report.status != "ready":
-        raise SystemExit(1)
+        if report.status != "ready":
+            raise SystemExit(1)
+        return None
+    settings = get_settings()
+    try:
+        payload = read_health(settings.worker_health_file)
+    except (OSError, ValueError):
+        return 1
+    if payload.get("state") not in {"starting", "idle", "processing", "retrying"}:
+        return 1
+    if not is_fresh(payload, settings.worker_heartbeat_stale_seconds):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
