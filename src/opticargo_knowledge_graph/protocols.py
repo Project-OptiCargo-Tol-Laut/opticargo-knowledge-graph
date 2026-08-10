@@ -1,24 +1,39 @@
-"""Structural protocols for graph runtime dependencies."""
-
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol
 
+from .projections.models import ProjectionPlan
+
+
+class GraphClient(Protocol):
+    def ping(self) -> bool: ...
+    def run(
+        self,
+        query: str,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        readonly: bool = True,
+    ) -> list[dict[str, Any]]: ...
+    def apply_projection(self, plan: ProjectionPlan) -> None: ...
+    def delete_projection(self, entity_type: str, entity_id: str, label: str) -> None: ...
+    def projection_state(self, entity_type: str, label: str) -> dict[str, str]: ...
+
+
+class CanonicalRepository(Protocol):
+    def ping(self) -> bool: ...
+    def fetch_one(self, sql: str, *, entity_id: str) -> dict[str, Any] | None: ...
+    def iter_rows(self, sql: str, *, batch_size: int = 500) -> Any: ...
+
+
+class StreamClient(Protocol):
+    def ping(self) -> bool: ...
 
 class Neo4jSession(Protocol):
-    def run(self, query: str, **parameters: Any) -> Any: ...
-
-
+    def run(self, query: str, **parameters: Any): ...
 class Neo4jDriver(Protocol):
-    def session(self) -> Any: ...
-
-
+    def session(self, **kwargs: Any): ...
 class ProjectionHandler(Protocol):
     def project(self, session: Neo4jSession, event: Any) -> Any: ...
-
-
 class ProjectionSource(Protocol):
     def fetch(self, entity_type: str, entity_id: str) -> dict[str, Any] | None: ...
-
-
-__all__ = ["Neo4jDriver", "Neo4jSession", "ProjectionHandler", "ProjectionSource"]
