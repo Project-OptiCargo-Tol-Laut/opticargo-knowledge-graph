@@ -4,7 +4,10 @@ import opticargo_knowledge_graph.queries as queries
 
 
 def test_query_package_public_surface_is_available() -> None:
-    assert set(queries.__all__) == {
+    """Develop API stays available while final may add backward-compatible API."""
+    public = set(queries.__all__)
+
+    develop_surface = {
         "booking_lifecycle",
         "candidate_suppliers",
         "corridor_metrics",
@@ -18,3 +21,12 @@ def test_query_package_public_surface_is_available() -> None:
         "underserved_ports",
         "voyage_cargo_matches",
     }
+    final_surface = {
+        "enrich_cargo_listing",
+        "find_backhaul_candidates",
+        "get_voyage_context",
+        "graph_overview",
+    }
+
+    assert develop_surface <= public
+    assert final_surface <= public
