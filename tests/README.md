@@ -16,4 +16,15 @@ Testing dibagi berdasarkan tujuan agar evidence mudah ditelusuri ke requirement 
 | `security/` | Secret/log redaction, sensitive property exclusion, injection safety, read-only PostgreSQL, internal-only runtime. |
 | `fixtures/` | Dataset/event/expected graph/query fixture versioned dan non-sensitive. |
 
-Seluruh file test masih kosong. Nama file dan README berfungsi sebagai test backlog, bukan bukti bahwa behavior telah lulus.
+Seluruh file test Python pada struktur di atas telah memiliki implementasi. Test
+yang membutuhkan dependency nyata memakai environment gate eksplisit agar tidak
+memberi hasil lulus semu pada runtime yang tidak tersedia:
+
+- `OPTICARGO_INTEGRATION=1` untuk Neo4j integration dasar;
+- `OPTICARGO_FULL_INTEGRATION=1` untuk PostgreSQL dan Redis disposable;
+- `OPTICARGO_SEEDED_INTEGRATION=1` untuk evaluation terhadap dataset OptiCargo;
+- `OPTICARGO_E2E=1` untuk lifecycle/recovery;
+- `OPTICARGO_PERFORMANCE=1` untuk benchmark dengan threshold terkonfigurasi.
+
+Skip tanpa environment tersebut berarti precondition runtime tidak dipenuhi,
+bukan bukti bahwa capability telah lulus.

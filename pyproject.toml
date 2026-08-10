@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opticargo-knowledge-graph"
+version = "1.0.0"
+description = "Neo4j projection, graph synchronization, reconciliation, and typed query package for OptiCargo AI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "OptiCargo AI Team" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Typing :: Typed",
+]
+dependencies = [
+  "opticargo-shared==1.0.0",
+  "pydantic>=2.8,<3",
+  "pydantic-settings>=2.4,<3",
+  "neo4j>=5.21,<6",
+  "redis>=5.0,<7",
+  "SQLAlchemy>=2.0,<3",
+  "psycopg[binary]>=3.1,<4",
+  "prometheus-client>=0.20,<1",
+  "orjson>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.11,<2",
+  "pytest>=8,<10",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+opticargo-graph-worker = "opticargo_knowledge_graph.worker:run"
+opticargo-graph-reconcile = "opticargo_knowledge_graph.reconcile:run"
+opticargo-graph-migrate = "opticargo_knowledge_graph.cli.migrate:run"
+opticargo-graph-doctor = "opticargo_knowledge_graph.cli.doctor:run"
+opticargo-graph-schema = "opticargo_knowledge_graph.cli.schema:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+opticargo_knowledge_graph = ["py.typed", "schema/*.cypher", "schema/migrations/*.cypher", "schema/**/*.cypher"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+markers = [
+  "integration: requires external services or explicit integration environment",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "RUF", "SIM", "C4", "T20"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/opticargo_knowledge_graph/cli/*.py" = ["T201"]
+"src/opticargo_knowledge_graph/reconcile.py" = ["T201"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["opticargo_knowledge_graph"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = [
+  "neo4j.*",
+  "redis.*",
+  "psycopg.*",
+]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["opticargo_knowledge_graph"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
