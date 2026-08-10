@@ -1,50 +1,89 @@
-name: Knowledge Graph CI
+name: ci
 
 on:
-  pull_request:
   push:
-    branches: [develop, main]
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: opticargo-knowledge-graph
-      - uses: actions/checkout@v4
-        with:
-          repository: Project-OptiCargo-Tol-Laut/opticargo-shared
-          ref: develop
-          path: opticargo-shared
-      - uses: actions/checkout@v4
-        with:
-          repository: Project-OptiCargo-Tol-Laut/opticargo-data
-          ref: develop
-          path: opticargo-data
-      - uses: actions/checkout@v4
-        with:
-          repository: Project-OptiCargo-Tol-Laut/opticargo-infra
-          ref: develop
-          path: opticargo-infra
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install
+      - name: Verify immutable Shared artifact
+        shell: bash
+        run: test -n "$(find vendor -maxdepth 1 -name 'opticargo_shared-1.0.0-*.whl' -print -quit)"
+      - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ./opticargo-shared
-          python -m pip install -e './opticargo-knowledge-graph[dev]'
-          python -m pip install ruff
-      - name: Validate
-        working-directory: opticargo-knowledge-graph
+          python -m pip install vendor/opticargo_shared-1.0.0-*.whl
+          python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check src tests
+      - name: Format check
+        run: python -m ruff format --check src tests
+      - name: Type check
+        run: python -m mypy src/opticargo_knowledge_graph
+      - name: Test and coverage
+        run: >-
+          python -m pytest
+          --cov=opticargo_knowledge_graph
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=80
+      - name: Compile
+        run: python -m compileall -q src tests
+      - name: Build package
+        run: python -m build
+      - name: Verify package data
+        shell: bash
         run: |
-          ruff check src tests
-          python -m compileall -q src tests
-          pytest -q
-          python -c "from opticargo_knowledge_graph.schema import load_migrations; assert load_migrations()"
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          wheel = next(Path('dist').glob('*.whl'))
+          names = set(zipfile.ZipFile(wheel).namelist())
+          assert any(name.endswith('schema/migrations/001_constraints.cypher') for name in names)
+          assert any(name.endswith('schema/migrations/003_fulltext.cypher') for name in names)
+          PY
+      - name: Upload package
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opticargo-knowledge-graph-dist
+          path: dist/*
+          if-no-files-found: error
+
+  container:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify immutable Shared artifact
+        shell: bash
+        run: test -n "$(find vendor -maxdepth 1 -name 'opticargo_shared-1.0.0-*.whl' -print -quit)"
+      - name: Build worker image
+        run: >-
+          docker build
+          --build-arg OPTICARGO_RELEASE=ci
+          --build-arg OPTICARGO_GIT_SHA=${GITHUB_SHA}
+          --tag opticargo-knowledge-graph:ci
+          .
+      - name: Verify package and entrypoints
+        run: |
+          docker image inspect opticargo-knowledge-graph:ci >/dev/null
+          docker run --rm --entrypoint python opticargo-knowledge-graph:ci -c \
+            "import opticargo_knowledge_graph; print(opticargo_knowledge_graph.__version__)"
+          docker run --rm --entrypoint python opticargo-knowledge-graph:ci -m \
+            opticargo_knowledge_graph.cli.schema --list
