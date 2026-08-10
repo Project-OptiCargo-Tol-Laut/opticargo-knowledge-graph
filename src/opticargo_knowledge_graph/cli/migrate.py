@@ -1,10 +1,30 @@
-"""Apply Neo4j schema migrations."""
-
 from __future__ import annotations
 
-from opticargo_knowledge_graph.cli.factory import build_driver_from_env
-from opticargo_knowledge_graph.config import GraphSettings
-from opticargo_knowledge_graph.schema.migrator import apply_migrations
+import json
+
+from ..config import get_settings
+from ..schema import GraphMigrator
+from .factory import build_driver_from_env, clients, close_all
+from ..config import GraphSettings
+from ..schema.migrator import apply_migrations
+
+
+def run() -> None:
+    settings = get_settings()
+    postgres, neo4j, redis = clients(settings)
+    try:
+        applied = GraphMigrator(
+            neo4j,
+            schema_name=settings.graph_schema_name,
+            target_version=settings.graph_schema_target_version,
+        ).migrate()
+        print(json.dumps({"status": "ok", "applied_versions": applied}))
+    finally:
+        close_all(postgres, neo4j, redis)
+
+
+if __name__ == "__main__":
+    run()
 
 
 def main() -> int:
@@ -17,10 +37,3 @@ def main() -> int:
         driver.close()
     print(f"Applied {count} graph schema migrations")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-__all__ = ["main"]
