@@ -6,10 +6,12 @@ __pycache__
 .mypy_cache
 .ruff_cache
 .coverage
+coverage.xml
 htmlcov
 build
 dist
 tests
+scripts
+docs
 *.log
 .env
-vendor/*.whl
