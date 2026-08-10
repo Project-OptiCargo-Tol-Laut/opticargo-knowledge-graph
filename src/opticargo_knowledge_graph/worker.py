@@ -1,40 +1,37 @@
 from __future__ import annotations
 
-import json
+import logging
 import os
 import signal
-import socket
+import threading
 import time
-from collections.abc import Callable
-from datetime import datetime, timezone
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from opticargo_shared.events import EVENT_VERSION, DomainEvent, EventType
-
-from opticargo_knowledge_graph.clients.neo4j import create_neo4j_driver
-from opticargo_knowledge_graph.clients.postgres import PostgresProjectionSource
-from opticargo_knowledge_graph.clients.redis_stream import create_redis_client
-from opticargo_knowledge_graph.config import GraphSettings
-from opticargo_knowledge_graph.contracts import EntityChangedEvent
-from opticargo_knowledge_graph.health import WorkerHeartbeat, write_heartbeat
-from opticargo_knowledge_graph.logging import configure_logging, get_logger, log_event
-from opticargo_knowledge_graph.metrics import (
-    DEPENDENCY_UP,
-    PENDING_BACKLOG,
-    WORKER_HEARTBEAT_TIMESTAMP,
-    record_event,
-    start_metrics,
+from .clients import Neo4jClient, PostgresClient, RedisStreamClient
+from .config import Settings, get_settings
+from .contracts import EventEnvelopeView, stream_fields_to_dict, validate_domain_event
+from .errors import ContractError, KnowledgeGraphError, UnsupportedEventError
+from .health import WorkerHealth, WorkerHeartbeat, write_health, write_heartbeat
+from .logging import configure_logging, log_event
+from .metrics import (
+    GRAPH_BUILD_INFO,
+    GRAPH_DEPENDENCY_UP,
+    GRAPH_DLQ_TOTAL,
+    GRAPH_EVENT_DURATION,
+    GRAPH_EVENTS_TOTAL,
+    GRAPH_HEARTBEAT,
+    GRAPH_PENDING,
+    GRAPH_RETRIES_TOTAL,
+    GRAPH_SYNC_LAG,
+    start_metrics_server,
 )
-from opticargo_knowledge_graph.projections import (
-    ProjectionService,
-    default_projection_registry,
-)
-from opticargo_knowledge_graph.schema import SchemaMigrator
-from opticargo_knowledge_graph.version import __version__
+from .projections import ProjectionService
+from .schema import GraphMigrator
 
-_shutdown = False
-LOGGER = get_logger()
+from opticargo_shared.events import EventType
 
 PROJECTABLE_EVENT_TYPES: dict[EventType, tuple[str | None, str]] = {
     EventType.entity_changed: (None, "updated"),
@@ -50,340 +47,381 @@ PROJECTABLE_EVENT_TYPES: dict[EventType, tuple[str | None, str]] = {
 }
 
 
-def _handle_shutdown(signum, frame):
-    global _shutdown
-    _ = (signum, frame)
-    _shutdown = True
+class GraphWorker:
+    def __init__(
+        self,
+        settings: Settings,
+        postgres: Any,
+        neo4j: Any,
+        redis: Any,
+        *,
+        event_validator: Callable[[dict[str, Any]], EventEnvelopeView] = validate_domain_event,
+    ) -> None:
+        self.settings = settings
+        self.postgres = postgres
+        self.neo4j = neo4j
+        self.redis = redis
+        self.event_validator = event_validator
+        self.projection = ProjectionService(postgres, neo4j)
+        self.logger = logging.getLogger(__name__)
+        self.stop_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self._state = "starting"
+        self._last_event_id: str | None = None
+        self._last_error: str | None = None
+        self._dependencies: dict[str, bool] = {}
+        self._active_message_ids: set[str] = set()
 
+    def request_stop(self, *_args: Any) -> None:
+        self.stop_event.set()
 
-def ensure_consumer_group(redis_client, stream: str, group: str) -> None:
-    try:
-        redis_client.xgroup_create(stream, group, id="0", mkstream=True)
-    except Exception as exc:
-        if "BUSYGROUP" not in str(exc):
-            raise
+    def startup(self) -> None:
+        self.redis.ensure_group(self.settings.event_stream, self.settings.graph_consumer_group)
+        GraphMigrator(
+            self.neo4j,
+            schema_name=self.settings.graph_schema_name,
+            target_version=self.settings.graph_schema_target_version,
+        ).migrate()
+        self._probe_dependencies(require_all=True)
 
+    def run_forever(self) -> None:
+        self.startup()
+        monitor = threading.Thread(target=self._monitor_loop, name="graph-monitor", daemon=True)
+        monitor.start()
+        with ThreadPoolExecutor(
+            max_workers=self.settings.worker_concurrency,
+            thread_name_prefix="graph-event",
+        ) as executor:
+            futures: set[Future[None]] = set()
+            while not self.stop_event.is_set():
+                futures = {future for future in futures if not future.done()}
+                capacity = max(0, self.settings.worker_concurrency - len(futures))
+                if capacity == 0:
+                    time.sleep(0.05)
+                    continue
+                messages = self.redis.autoclaim(
+                    stream=self.settings.event_stream,
+                    group=self.settings.graph_consumer_group,
+                    consumer=self.settings.graph_consumer_name,
+                    min_idle_ms=self.settings.worker_pending_idle_ms,
+                    count=min(capacity, self.settings.worker_batch_size),
+                )
+                if not messages:
+                    messages = self.redis.read_group(
+                        stream=self.settings.event_stream,
+                        group=self.settings.graph_consumer_group,
+                        consumer=self.settings.graph_consumer_name,
+                        count=min(capacity, self.settings.worker_batch_size),
+                        block_ms=self.settings.worker_block_ms,
+                    )
+                if not messages:
+                    self._set_state("idle")
+                    continue
+                for message_id, fields in messages:
+                    if not self._reserve_message(message_id):
+                        continue
+                    future = executor.submit(self._handle_message, message_id, fields)
+                    future.add_done_callback(
+                        lambda _future, reserved_id=message_id: self._release_message(reserved_id)
+                    )
+                    futures.add(future)
+            for future in futures:
+                future.result()
+        self._set_state("stopped")
+        monitor.join(timeout=self.settings.worker_heartbeat_seconds + 1)
+        self._write_health()
 
-def process_entry(
-    redis_client,
-    *,
-    stream: str,
-    group: str,
-    dlq_stream: str,
-    entry_id: str,
-    fields: dict[str, Any],
-    projection_service: ProjectionService,
-    session_factory: Callable[[], Any],
-    max_attempts: int = 5,
-    delivery_attempt: int | None = None,
-) -> str:
-    raw_event = fields.get("event") or fields.get("data")
-    if not raw_event:
-        _publish_dlq(redis_client, dlq_stream, "", "event envelope is missing", entry_id)
-        redis_client.xack(stream, group, entry_id)
-        record_event("invalid", "invalid")
-        return "invalid"
+    def _reserve_message(self, message_id: str) -> bool:
+        with self._state_lock:
+            if message_id in self._active_message_ids:
+                return False
+            self._active_message_ids.add(message_id)
+            return True
 
-    event_json = raw_event if isinstance(raw_event, str) else json.dumps(raw_event)
-    try:
-        event = DomainEvent.model_validate_json(event_json)
-    except Exception as exc:  # noqa: BLE001 - projection dependencies have varied errors
-        _publish_dlq(
-            redis_client,
-            dlq_stream,
-            event_json,
-            f"invalid event envelope: {exc.__class__.__name__}",
-            entry_id,
-        )
-        redis_client.xack(stream, group, entry_id)
-        record_event("invalid", "invalid")
-        return "invalid"
+    def _release_message(self, message_id: str) -> None:
+        with self._state_lock:
+            self._active_message_ids.discard(message_id)
 
-    if event.event_version != EVENT_VERSION:
-        _publish_dlq(
-            redis_client,
-            dlq_stream,
-            event_json,
-            f"unsupported event version: {event.event_version}",
-            entry_id,
-        )
-        redis_client.xack(stream, group, entry_id)
-        record_event(str(event.event_type), "invalid")
-        return "invalid"
-
-    mapping = PROJECTABLE_EVENT_TYPES.get(event.event_type)
-    if mapping is None:
-        redis_client.xack(stream, group, entry_id)
-        record_event(str(event.event_type), "ignored")
-        return "ignored"
-
-    mapped_entity_type, default_operation = mapping
-    operation = str(
-        event.payload.get("change_type")
-        or event.payload.get("operation")
-        or default_operation
-    )
-
-    changed = EntityChangedEvent(
-        event_id=str(event.event_id),
-        entity_type=mapped_entity_type or event.entity_type,
-        entity_id=str(event.entity_id),
-        operation=operation,
-        payload=dict(event.payload),
-        occurred_at=event.occurred_at,
-    )
-    try:
-        with session_factory() as session:
-            result = projection_service.project(session, changed)
-        if result.status == "skipped":
-            _publish_dlq(
-                redis_client,
-                dlq_stream,
-                event_json,
-                result.detail or "projection was skipped",
-                entry_id,
+    def _handle_message(self, message_id: str, fields: dict[Any, Any]) -> None:
+        started = time.perf_counter()
+        event: EventEnvelopeView | None = None
+        try:
+            raw = stream_fields_to_dict(fields)
+            event = self.event_validator(raw)
+            if event.event_version != self.settings.graph_supported_event_version:
+                raise ContractError(
+                    f"unsupported event version {event.event_version}; "
+                    f"expected {self.settings.graph_supported_event_version}"
+                )
+            if self.redis.is_processed(self.settings.graph_projection_namespace, event.event_id):
+                self._ack_success(message_id, event, "duplicate")
+                return
+            self._set_state("processing", event_id=event.event_id)
+            self._process_with_retry(event)
+            self.redis.mark_processed(self.settings.graph_projection_namespace, event.event_id)
+            self.redis.clear_retry(self.settings.graph_projection_namespace, event.event_id)
+            self._ack_success(message_id, event, "projected")
+        except UnsupportedEventError:
+            self.redis.ack(
+                self.settings.event_stream,
+                self.settings.graph_consumer_group,
+                message_id,
             )
-            status = "skipped"
-        else:
-            status = result.status
-    except Exception as exc:  # noqa: BLE001
-        attempt = delivery_attempt or _delivery_attempts(
-            redis_client, stream=stream, group=group, entry_id=entry_id
-        )
-        if attempt < max(1, max_attempts):
+            if event is not None:
+                self.redis.clear_retry(
+                    self.settings.graph_projection_namespace,
+                    event.event_id,
+                )
+            GRAPH_EVENTS_TOTAL.labels(
+                event_type=event.event_type if event else "unknown",
+                result="ignored",
+            ).inc()
+            self._set_state("idle", event_id=event.event_id if event else None)
             log_event(
-                LOGGER,
-                "projection_retry",
-                entry_id=entry_id,
-                attempt=attempt,
-                error_type=exc.__class__.__name__,
+                self.logger,
+                logging.INFO,
+                "graph event ignored",
+                event_id=event.event_id if event else None,
+                event_type=event.event_type if event else "unknown",
+                correlation_id=event.correlation_id if event else None,
+                reason="not_projectable",
             )
-            record_event(str(event.event_type), "retry")
-            return "retry"
-        _publish_dlq(
-            redis_client,
-            dlq_stream,
-            event_json,
-            f"projection failed after {attempt} attempts: {exc.__class__.__name__}",
-            entry_id,
-        )
-        status = "failed"
+        except ContractError as exc:
+            self._to_dlq(message_id, event, "contract_error", str(exc), fields)
+        except Exception as exc:
+            self._to_dlq(message_id, event, "processing_error", str(exc), fields)
+        finally:
+            GRAPH_EVENT_DURATION.labels(
+                event_type=event.event_type if event else "unknown"
+            ).observe(time.perf_counter() - started)
 
-    redis_client.xack(stream, group, entry_id)
-    record_event(str(event.event_type), status)
-    return status
-
-
-def _delivery_attempts(redis_client, *, stream: str, group: str, entry_id: str) -> int:
-    pending = redis_client.xpending_range(stream, group, entry_id, entry_id, 1)
-    if not pending:
-        return 1
-    row = pending[0]
-    if isinstance(row, dict):
-        return int(row.get("times_delivered") or row.get("delivery_count") or 1)
-    return int(getattr(row, "times_delivered", 1))
-
-
-def reclaim_pending(
-    redis_client,
-    *,
-    stream: str,
-    group: str,
-    consumer: str,
-    min_idle_ms: int,
-    count: int,
-) -> list[tuple[str, dict[str, Any]]]:
-    response = redis_client.xautoclaim(
-        stream,
-        group,
-        consumer,
-        min_idle_ms,
-        "0-0",
-        count=count,
-    )
-    if not response or len(response) < 2:
-        return []
-    return list(response[1])
-
-
-def run_once(
-    redis_client,
-    *,
-    stream: str,
-    group: str,
-    consumer: str,
-    dlq_stream: str,
-    projection_service: ProjectionService,
-    session_factory: Callable[[], Any],
-    block_ms: int = 1000,
-    count: int = 20,
-    pending_idle_ms: int = 60_000,
-    max_attempts: int = 5,
-) -> dict[str, int]:
-    reclaimed = reclaim_pending(
-        redis_client,
-        stream=stream,
-        group=group,
-        consumer=consumer,
-        min_idle_ms=pending_idle_ms,
-        count=count,
-    )
-    batches = redis_client.xreadgroup(
-        group,
-        consumer,
-        {stream: ">"},
-        count=count,
-        block=block_ms,
-    )
-    entries_to_process = list(reclaimed)
-    seen = {entry_id for entry_id, _ in reclaimed}
-    for _, entries in batches:
-        entries_to_process.extend(
-            (entry_id, fields) for entry_id, fields in entries if entry_id not in seen
-        )
-    outcomes: dict[str, int] = {}
-    for entry_id, fields in entries_to_process:
-        status = process_entry(
-            redis_client,
-            stream=stream,
-            group=group,
-            dlq_stream=dlq_stream,
-            entry_id=entry_id,
-            fields=fields,
-            projection_service=projection_service,
-            session_factory=session_factory,
-            max_attempts=max_attempts,
-        )
-        outcomes[status] = outcomes.get(status, 0) + 1
-    return outcomes
-
-
-def _publish_dlq(
-    redis_client,
-    dlq_stream: str,
-    event_json: str,
-    reason: str,
-    entry_id: str,
-) -> None:
-    safe_event: dict[str, Any] = {}
-    try:
-        decoded = json.loads(event_json)
-        if isinstance(decoded, dict):
-            for key in (
-                "event_id",
-                "event_type",
-                "event_version",
-                "producer",
-                "entity_type",
-                "entity_id",
-                "correlation_id",
-                "occurred_at",
-            ):
-                if key in decoded:
-                    safe_event[key] = decoded[key]
-    except (json.JSONDecodeError, TypeError):
-        pass
-    redis_client.xadd(
-        dlq_stream,
-        {
-            "event": json.dumps(safe_event, sort_keys=True),
-            "reason": reason,
-            "source_entry_id": entry_id,
-            "failed_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-
-
-def main() -> None:
-    configure_logging()
-    signal.signal(signal.SIGTERM, _handle_shutdown)
-    signal.signal(signal.SIGINT, _handle_shutdown)
-
-    settings = GraphSettings.from_environment()
-    stream = os.getenv("EVENT_STREAM", "opticargo:events")
-    group = os.getenv("GRAPH_CONSUMER_GROUP", "graph-sync")
-    dlq_stream = os.getenv("EVENT_DLQ_STREAM", "opticargo:events:dlq")
-    consumer = f"graph-{socket.gethostname()}-{os.getpid()}"
-    heartbeat_seconds = max(1, settings.worker_heartbeat_seconds)
-    heartbeat_path = Path(os.getenv("GRAPH_HEARTBEAT_PATH", "/tmp/opticargo-graph-heartbeat.json"))
-    start_metrics(int(os.getenv("WORKER_METRICS_PORT", "9100")))
-    redis_client = create_redis_client(settings)
-    driver = create_neo4j_driver(settings)
-    projection_service = ProjectionService(
-        default_projection_registry(),
-        PostgresProjectionSource(),
-    )
-
-    ensure_consumer_group(redis_client, stream, group)
-    driver.verify_connectivity()
-    DEPENDENCY_UP.labels(dependency="redis").set(1)
-    DEPENDENCY_UP.labels(dependency="neo4j").set(1)
-    DEPENDENCY_UP.labels(dependency="postgres").set(1)
-    with driver.session(database=settings.neo4j_database) as migration_session:
-        migration_report = SchemaMigrator(migration_session).apply()
-    log_event(
-        LOGGER,
-        "worker_started",
-        consumer=consumer,
-        schema_version=migration_report.current_version,
-        migrations_applied=migration_report.applied,
-    )
-    last_heartbeat = 0.0
-
-    def session_factory():
-        return driver.session(database=settings.neo4j_database)
-
-    try:
-        while not _shutdown:
+    def _process_with_retry(self, event: EventEnvelopeView) -> None:
+        attempts = self.redis.retry_count(self.settings.graph_projection_namespace, event.event_id)
+        while True:
             try:
-                outcomes = run_once(
-                    redis_client,
-                    stream=stream,
-                    group=group,
-                    consumer=consumer,
-                    dlq_stream=dlq_stream,
-                    projection_service=projection_service,
-                    session_factory=session_factory,
-                    block_ms=max(1, settings.worker_block_ms),
-                    count=max(1, settings.worker_batch_size),
-                    pending_idle_ms=max(1, settings.worker_pending_idle_ms),
-                    max_attempts=max(1, settings.worker_max_attempts),
+                self.projection.process_event(event)
+                return
+            except Exception as exc:
+                # Valid-but-irrelevant events and other non-retryable domain errors
+                # must never consume the retry budget. They are handled by the
+                # outer worker boundary (ignored/ACK or DLQ as appropriate).
+                if isinstance(exc, KnowledgeGraphError) and not exc.retryable:
+                    raise
+                attempts = self.redis.increment_retry(
+                    self.settings.graph_projection_namespace,
+                    event.event_id,
                 )
-                if outcomes:
-                    log_event(LOGGER, "worker_batch", outcomes=outcomes)
-            except Exception as exc:  # noqa: BLE001 - long-running worker retry boundary
-                log_event(LOGGER, "worker_loop_retry", error_type=exc.__class__.__name__)
-                time.sleep(1)
-            now = time.monotonic()
-            if now - last_heartbeat >= heartbeat_seconds:
-                pending = redis_client.xpending(stream, group)
-                pending_count = int(
-                    pending.get("pending", 0) if isinstance(pending, dict) else pending[0]
+                GRAPH_RETRIES_TOTAL.labels(reason=type(exc).__name__).inc()
+                if attempts > self.settings.worker_max_retries:
+                    raise
+                self._set_state("retrying", event_id=event.event_id, error=str(exc))
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "graph event retry scheduled",
+                    event_id=event.event_id,
+                    event_type=event.event_type,
+                    correlation_id=event.correlation_id,
+                    attempt=attempts,
+                    error=str(exc),
                 )
-                timestamp = datetime.now(timezone.utc)
-                PENDING_BACKLOG.set(pending_count)
-                WORKER_HEARTBEAT_TIMESTAMP.set(timestamp.timestamp())
-                write_heartbeat(
-                    heartbeat_path,
-                    WorkerHeartbeat(
-                        state="ready",
-                        timestamp=timestamp,
-                        release=__version__,
-                        dependencies={
-                            "neo4j": "ready",
-                            "postgres": "ready",
-                            "redis": "ready",
-                        },
-                        pending_count=pending_count,
-                    ),
+                self.redis.sleep_backoff(
+                    self.settings.worker_retry_backoff_seconds,
+                    attempts,
                 )
-                log_event(LOGGER, "worker_heartbeat", consumer=consumer)
-                last_heartbeat = now
+
+    def _ack_success(self, message_id: str, event: EventEnvelopeView, result: str) -> None:
+        self.redis.ack(
+            self.settings.event_stream,
+            self.settings.graph_consumer_group,
+            message_id,
+        )
+        lag = max(0.0, (datetime.now(UTC) - event.occurred_at.astimezone(UTC)).total_seconds())
+        GRAPH_SYNC_LAG.set(lag)
+        GRAPH_EVENTS_TOTAL.labels(event_type=event.event_type, result=result).inc()
+        self._set_state("idle", event_id=event.event_id)
+        log_event(
+            self.logger,
+            logging.INFO,
+            "graph event processed",
+            event_id=event.event_id,
+            event_type=event.event_type,
+            entity_id=event.entity_id,
+            correlation_id=event.correlation_id,
+            result=result,
+            sync_lag_seconds=lag,
+        )
+
+    def _to_dlq(
+        self,
+        message_id: str,
+        event: EventEnvelopeView | None,
+        reason: str,
+        error: str,
+        fields: dict[Any, Any],
+    ) -> None:
+        event_id = event.event_id if event else str(message_id)
+        self.redis.send_dlq(
+            self.settings.event_dlq_stream,
+            {
+                "source_stream": self.settings.event_stream,
+                "source_message_id": message_id,
+                "consumer_group": self.settings.graph_consumer_group,
+                "failed_by": self.settings.graph_consumer_name,
+                "event_id": event_id,
+                "event_type": event.event_type if event else "unknown",
+                "failure_code": reason,
+                "failure_message": error[:1000],
+                "original_field_count": len(fields),
+            },
+        )
+        self.redis.ack(
+            self.settings.event_stream,
+            self.settings.graph_consumer_group,
+            message_id,
+        )
+        GRAPH_DLQ_TOTAL.labels(reason=reason).inc()
+        GRAPH_EVENTS_TOTAL.labels(
+            event_type=event.event_type if event else "unknown",
+            result="dlq",
+        ).inc()
+        self._set_state("idle", event_id=event_id, error=error)
+        log_event(
+            self.logger,
+            logging.ERROR,
+            "graph event routed to DLQ",
+            event_id=event_id,
+            event_type=event.event_type if event else "unknown",
+            correlation_id=event.correlation_id if event else None,
+            reason=reason,
+            error=error,
+        )
+
+    def _probe_dependencies(self, *, require_all: bool = False) -> dict[str, bool]:
+        checks = {
+            "postgres": self.postgres.ping,
+            "neo4j": self.neo4j.ping,
+            "redis": self.redis.ping,
+        }
+        dependencies: dict[str, bool] = {}
+        for name, check in checks.items():
+            try:
+                dependencies[name] = bool(check())
+            except Exception:
+                dependencies[name] = False
+            GRAPH_DEPENDENCY_UP.labels(dependency=name).set(int(dependencies[name]))
+        with self._state_lock:
+            self._dependencies = dependencies
+        if require_all and not all(dependencies.values()):
+            unavailable = sorted(name for name, available in dependencies.items() if not available)
+            raise RuntimeError(f"graph worker dependencies unavailable: {', '.join(unavailable)}")
+        return dependencies
+
+    def _monitor_loop(self) -> None:
+        while not self.stop_event.wait(self.settings.worker_heartbeat_seconds):
+            try:
+                pending = self.redis.pending_count(
+                    self.settings.event_stream,
+                    self.settings.graph_consumer_group,
+                )
+            except Exception:
+                pending = -1
+            GRAPH_PENDING.set(max(0, pending))
+            GRAPH_HEARTBEAT.set(time.time())
+            self._probe_dependencies()
+            self._write_health(pending_entries=max(0, pending))
+
+    def _set_state(
+        self,
+        state: str,
+        *,
+        event_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._state_lock:
+            self._state = state
+            if event_id is not None:
+                self._last_event_id = event_id
+            self._last_error = error
+        self._write_health()
+
+    def _write_health(self, pending_entries: int = 0) -> None:
+        with self._state_lock:
+            health = WorkerHealth.now(
+                state=self._state,
+                dependencies=dict(self._dependencies),
+                pending_entries=pending_entries,
+                last_event_id=self._last_event_id,
+                last_error=self._last_error,
+                release=self.settings.opticargo_release,
+                git_sha=self.settings.opticargo_git_sha,
+            )
+        write_health(self.settings.worker_health_file, health)
+
+        # Preserve the develop heartbeat contract when infra explicitly asks for
+        # it, while keeping the final structured health file as the canonical
+        # runtime health source. This lets old healthcheck callers coexist with
+        # the final worker without changing the projection/runtime path.
+        legacy_path = os.getenv("GRAPH_HEARTBEAT_PATH")
+        if legacy_path:
+            dependencies = {
+                name: "ready" if available else "degraded"
+                for name, available in health.dependencies.items()
+            }
+            legacy_state = (
+                "ready"
+                if health.dependencies and all(health.dependencies.values())
+                else "degraded"
+            )
+            write_heartbeat(
+                Path(legacy_path),
+                WorkerHeartbeat(
+                    state=legacy_state,
+                    timestamp=datetime.now(UTC),
+                    release=health.release,
+                    dependencies=dependencies,
+                    pending_count=health.pending_entries,
+                    last_event_ref=health.last_event_id,
+                    last_error=health.last_error,
+                ),
+            )
+
+
+def create_runtime(settings: Settings) -> tuple[GraphWorker, PostgresClient, Neo4jClient, RedisStreamClient]:
+    postgres = PostgresClient(settings.database_url.get_secret_value())
+    neo4j = Neo4jClient(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password.get_secret_value(),
+        database=settings.neo4j_database,
+        query_timeout_seconds=settings.graph_query_timeout_seconds,
+    )
+    redis = RedisStreamClient(settings.redis_url.get_secret_value())
+    return GraphWorker(settings, postgres, neo4j, redis), postgres, neo4j, redis
+
+
+def run() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level, settings.log_format)
+    start_metrics_server(settings.worker_metrics_port)
+    GRAPH_BUILD_INFO.labels(
+        release=settings.opticargo_release,
+        git_sha=settings.opticargo_git_sha,
+        shared_version=settings.opticargo_shared_version,
+    ).set(1)
+    worker, postgres, neo4j, redis = create_runtime(settings)
+    signal.signal(signal.SIGTERM, worker.request_stop)
+    signal.signal(signal.SIGINT, worker.request_stop)
+    try:
+        worker.run_forever()
     finally:
-        driver.close()
-        redis_client.close()
-        log_event(LOGGER, "worker_stopped", consumer=consumer)
+        postgres.close()
+        neo4j.close()
+        redis.close()
 
 
 if __name__ == "__main__":
-    main()
+    run()
+
+# Sync develop worker entrypoint retained for tests/tools; final GraphWorker remains production runtime.
+from opticargo_knowledge_graph.compat.worker import process_entry, reclaim_pending, run_once
