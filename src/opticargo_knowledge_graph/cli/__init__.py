@@ -1,1 +1,1 @@
-"""Knowledge Graph CLI package."""
+"""Operational command-line utilities for the Knowledge Graph runtime."""
